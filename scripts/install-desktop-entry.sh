@@ -19,28 +19,25 @@ echo "==> Installing launcher to $BIN_DIR/grok-ripeoff"
 cp -p "$ROOT/scripts/grok-ripeoff-launcher.sh" "$BIN_DIR/grok-ripeoff"
 chmod +x "$BIN_DIR/grok-ripeoff"
 
-# 3. Install icons across all standard resolutions (including 48x48)
+# 3. Install icons across all standard resolutions (including 48x48 and 1024x1024)
 echo "==> Generating and installing icons..."
-SIZES=(16 32 48 64 128 256 512)
-has_converter=false
+SIZES=(16 32 48 64 128 256 512 1024)
+MASTER_ICON="$ROOT/app/icon-1024.png"
+[[ -f "$MASTER_ICON" ]] || MASTER_ICON="$ROOT/app/icon.png"
 
 for size in "${SIZES[@]}"; do
   dir="$ICONS_BASE/${size}x${size}/apps"
   mkdir -p "$dir"
-  if command -v rsvg-convert >/dev/null 2>&1; then
-    rsvg-convert -w "$size" -h "$size" "$ROOT/app/icon.svg" -o "$dir/grok-ripeoff.png"
-    has_converter=true
+  if command -v magick >/dev/null 2>&1; then
+    magick "$MASTER_ICON" -resize "${size}x${size}" "$dir/grok-ripeoff.png"
   elif command -v convert >/dev/null 2>&1; then
-    convert -background none -resize "${size}x${size}" "$ROOT/app/icon.svg" "$dir/grok-ripeoff.png"
-    has_converter=true
+    convert "$MASTER_ICON" -resize "${size}x${size}" "$dir/grok-ripeoff.png"
+  elif command -v rsvg-convert >/dev/null 2>&1 && [[ -f "$ROOT/app/icon.svg" ]]; then
+    rsvg-convert -w "$size" -h "$size" "$ROOT/app/icon.svg" -o "$dir/grok-ripeoff.png"
+  else
+    cp -p "$MASTER_ICON" "$dir/grok-ripeoff.png"
   fi
 done
-
-# Fallback raster copy if conversion tools were missing
-if [[ "$has_converter" != "true" && -f "$ROOT/app/icon.png" ]]; then
-  mkdir -p "$ICONS_BASE/256x256/apps"
-  cp -p "$ROOT/app/icon.png" "$ICONS_BASE/256x256/apps/grok-ripeoff.png"
-fi
 
 # Scalable SVG icon
 mkdir -p "$ICONS_BASE/scalable/apps"
