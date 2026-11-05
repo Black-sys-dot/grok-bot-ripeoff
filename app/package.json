@@ -2,6 +2,7 @@
   "name": "grok-ripeoff-app",
   "private": true,
   "version": "0.1.0",
+  "desktopName": "grok-ripeoff.desktop",
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {

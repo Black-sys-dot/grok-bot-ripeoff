@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+import hmac
+from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -10,7 +12,14 @@ from agent.config import OPENROUTER_API_KEY, OPENROUTER_MODEL, HOST, PORT, TOKEN
 from agent.root_gate import decide_root
 from agent.runner import run_agent_task
 
-app = FastAPI(title="Grok Agent Browser Worker", version="0.2.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    yield
+    get_session().shutdown()
+
+
+app = FastAPI(title="Grok Agent Browser Worker", version="0.2.0", lifespan=lifespan)
 
 
 class Action(BaseModel):
@@ -40,12 +49,12 @@ class RunRequest(BaseModel):
 
 class RootDecision(BaseModel):
     id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    approval_token: str = Field(min_length=10)
+    approval_token: str = Field(min_length=10, max_length=128)
     allow: bool
 
 
 class AgentTaskRequest(BaseModel):
-    goal: str = Field(min_length=3)
+    goal: str = Field(min_length=1)
     max_steps: int | None = Field(default=None, ge=1, le=60)
     use_vision: bool | None = None
     model: str | None = None
@@ -55,10 +64,14 @@ class AgentTaskRequest(BaseModel):
 
 def verify_token(authorization: str | None = Header(default=None)) -> None:
     if not TOKEN:
-        return
+        raise HTTPException(
+            status_code=500,
+            detail="Authentication token is misconfigured on the agent server.",
+        )
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
-    if authorization.removeprefix("Bearer ").strip() != TOKEN:
+    provided = authorization.removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(provided.encode("utf-8"), TOKEN.encode("utf-8")):
         raise HTTPException(status_code=401, detail="invalid token")
 
 
@@ -98,17 +111,21 @@ def agent_task(body: AgentTaskRequest, _: None = Depends(verify_token)) -> dict[
             max_steps=body.max_steps,
             use_vision=body.use_vision,
             model=body.model,
-            persona=body.persona,
-            bot_id=body.bot_id,
+            persona=body.persona or "",
+            bot_id=body.bot_id or "default",
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/agent/desktop/show")
-def desktop_show(_: None = Depends(verify_token)) -> dict[str, str]:
-    # The agent chooses the top window with show_on_screen. This does not rearrange it.
-    return {"status": "ok"}
+def desktop_show(_: None = Depends(verify_token)) -> dict[str, Any]:
+    try:
+        from agent.computer import desktop_show as show_impl
+
+        return show_impl()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/agent/root/decide")
@@ -127,11 +144,6 @@ def root_decide(body: RootDecision, _: None = Depends(verify_token)) -> dict[str
     }
 
 
-@app.on_event("shutdown")
-def on_shutdown() -> None:
-    get_session().shutdown()
-
-
 def main() -> None:
     import uvicorn
 
@@ -140,5 +152,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

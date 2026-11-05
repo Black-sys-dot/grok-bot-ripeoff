@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Find App Root (defaults to current symlink, then fallback to repo root)
+# Fallback repo root is baked in so launching from ~/.local/bin never falls back to ~/.local
+BAKED_REPO="/home/black/Projects/grok-bot-ripeoff"
 if [[ -d "$HOME/.local/share/grok-ripeoff/current" ]]; then
   APP_ROOT="$HOME/.local/share/grok-ripeoff/current"
+elif [[ -d "$BAKED_REPO" ]]; then
+  APP_ROOT="$BAKED_REPO"
 else
   APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 fi
@@ -15,8 +18,16 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/app.log"
 exec >> "$LOG_FILE" 2>&1
 
+notify_fail() {
+  local msg="$1"
+  echo "[$(date -Iseconds)] ERROR: $msg" >&2
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -u critical "Grok Ripeoff" "$msg (see $LOG_FILE)" 2>/dev/null || true
+  fi
+}
+
 echo "========================================="
-echo "[$(date -Iseconds)] Launching Grok Ripeoff"
+echo "[$(date -Iseconds)] Starting Grok Ripeoff"
 echo "APP_ROOT=$APP_ROOT"
 echo "USER_DATA=$USER_DATA"
 
@@ -29,18 +40,34 @@ ELECTRON_BIN="$APP_ROOT/app/node_modules/electron/dist/electron"
 if [[ ! -x "$ELECTRON_BIN" ]]; then
   echo "[$(date -Iseconds)] Electron binary missing at $ELECTRON_BIN, fixing..."
   bash "$APP_ROOT/scripts/fix-electron.sh" || {
-    echo "Failed to install electron binary"
+    notify_fail "Failed to prepare Electron runtime"
+    exit 1
+  }
+fi
+
+# Ensure Python virtual environment exists
+if [[ ! -x "$APP_ROOT/bridge/.venv/bin/python" ]]; then
+  echo "[$(date -Iseconds)] Bridge venv missing, creating..."
+  python3 -m venv "$APP_ROOT/bridge/.venv"
+  "$APP_ROOT/bridge/.venv/bin/pip" install -q -r "$APP_ROOT/bridge/requirements.txt" || {
+    notify_fail "Failed to install Python dependencies"
     exit 1
   }
 fi
 
 cleanup() {
-  echo "[$(date -Iseconds)] Cleaning up launcher processes"
-  [[ -n "$BRIDGE_PID" ]] && kill "$BRIDGE_PID" 2>/dev/null || true
+  local exit_code=$?
+  echo "[$(date -Iseconds)] Cleaning up launcher processes (exit $exit_code)..."
+  if [[ -n "${BRIDGE_PID:-}" ]] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
+    echo "[$(date -Iseconds)] Stopping bridge process (PID $BRIDGE_PID)..."
+    kill "$BRIDGE_PID" 2>/dev/null || true
+    wait "$BRIDGE_PID" 2>/dev/null || true
+  fi
+  exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
-# 1. Forward SSH ports if not open
+# 1. Forward SSH ports if not open (runs non-blocking check)
 forward_port() {
   local port="$1"
   if nc -z -w 1 127.0.0.1 "$port" 2>/dev/null; then
@@ -48,23 +75,23 @@ forward_port() {
     return 0
   fi
   echo "Opening SSH tunnel for :${port} to $SSH_HOST"
-  timeout 8 ssh -f -N \
+  timeout 4 ssh -f -N \
     -o BatchMode=yes \
-    -o ConnectTimeout=5 \
+    -o ConnectTimeout=3 \
     -o ConnectionAttempts=1 \
     -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=30 \
+    -o ServerAliveInterval=20 \
     -L "${port}:127.0.0.1:${port}" \
-    "$SSH_HOST" >"$LOG_DIR/tunnel-${port}.log" 2>&1 || {
-      echo "Notice: SSH tunnel for :$port not established. Continuing."
+    -- "$SSH_HOST" >"$LOG_DIR/tunnel-${port}.log" 2>&1 || {
+      echo "Notice: Initial tunnel for :$port did not connect immediately. Background monitor will retry."
     }
 }
 
 forward_port 8765
 forward_port 6080
 
-# 2. Check & start bridge
-if nc -z 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null; then
+# 2. Start bridge server if not already running
+if curl -sf --max-time 1 "http://127.0.0.1:${BRIDGE_PORT}/api/status" >/dev/null 2>&1; then
   echo "Bridge already running on :$BRIDGE_PORT"
 else
   echo "Starting bridge on :$BRIDGE_PORT"
@@ -78,18 +105,25 @@ else
   ) >> "$LOG_DIR/bridge.log" 2>&1 &
   BRIDGE_PID=$!
 
-  # Wait for bridge
+  # Wait for bridge with active health verification
+  bridge_ready=false
   for _ in $(seq 1 40); do
-    if curl -sf --max-time 1 "http://127.0.0.1:${BRIDGE_PORT}/api/status" -o /dev/null 2>/dev/null; then
+    if curl -sf --max-time 1 "http://127.0.0.1:${BRIDGE_PORT}/api/status" >/dev/null 2>&1; then
+      bridge_ready=true
       echo "Bridge is ready"
       break
     fi
     kill -0 "$BRIDGE_PID" 2>/dev/null || {
-      echo "Bridge process exited unexpectedly"
+      notify_fail "Bridge server terminated unexpectedly"
       exit 1
     }
     sleep 0.2
   done
+
+  if [[ "$bridge_ready" != "true" ]]; then
+    notify_fail "Bridge server did not become ready on port $BRIDGE_PORT"
+    exit 1
+  fi
 fi
 
 # 3. Build UI if dist is missing
@@ -98,14 +132,18 @@ if [[ ! -f "$APP_ROOT/app/dist/index.html" ]]; then
   (cd "$APP_ROOT/app" && npm run build) >> "$LOG_FILE" 2>&1
 fi
 
-# 4. Launch Electron
+# 4. Launch Electron with proper Wayland window decorations and app IDs
 flags=(--no-sandbox)
 if [[ "${XDG_SESSION_TYPE:-}" == "wayland" || -n "${WAYLAND_DISPLAY:-}" ]]; then
-  flags+=(--ozone-platform=wayland --enable-features=UseOzonePlatform)
+  flags+=(--ozone-platform=wayland --enable-features=WaylandWindowDecorations)
 fi
+
+export CHROME_DESKTOP="grok-ripeoff.desktop"
+export GROK_USER_DATA="$USER_DATA"
+export ELECTRON_START_URL="http://127.0.0.1:${BRIDGE_PORT}"
 
 echo "[$(date -Iseconds)] Opening Electron window"
 cd "$APP_ROOT/app"
-export GROK_USER_DATA="$USER_DATA"
-export ELECTRON_START_URL="http://127.0.0.1:${BRIDGE_PORT}"
-exec env -u ELECTRON_RUN_AS_NODE "$ELECTRON_BIN" . "${flags[@]}" --class="grok-ripeoff-app" "$@"
+
+# DO NOT use 'exec': running as a child allows 'trap cleanup' to terminate the bridge on window close!
+env -u ELECTRON_RUN_AS_NODE "$ELECTRON_BIN" . "${flags[@]}" --class="grok-ripeoff-app" "$@"

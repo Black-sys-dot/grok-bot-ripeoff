@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.staticfiles import StaticFiles
 
 from bridge.bots import load_bots, save_bots
 from bridge.tunnel import Tunnel, port_open
@@ -23,44 +26,72 @@ AGENT_BASE = os.environ.get("GROK_AGENT_BASE_URL", "http://127.0.0.1:8765").rstr
 AGENT_TOKEN = os.environ.get("GROK_AGENT_TOKEN", "")
 SSH_HOST = os.environ.get("GROK_SSH_HOST", "webeye-vps")
 
+# Sanitize SSH_HOST to prevent option injection
+if not re.match(r"^[a-zA-Z0-9_.-]+$", SSH_HOST):
+    raise ValueError(f"Invalid GROK_SSH_HOST value: {SSH_HOST}")
 
 _TOKEN_CACHE = AGENT_TOKEN
+_TOKEN_LOCK = threading.Lock()
 
 
 def _load_token() -> str:
     global _TOKEN_CACHE
-    if _TOKEN_CACHE:
-        return _TOKEN_CACHE
-    if not port_open(8765):
-        return ""
-    try:
-        out = subprocess.check_output(
-            ["ssh", "-o", "ConnectTimeout=8", SSH_HOST, "cat /etc/grok-agent/token"],
-            text=True,
-            timeout=15,
-        )
-        _TOKEN_CACHE = out.strip()
-        return _TOKEN_CACHE
-    except Exception:
-        return ""
+    with _TOKEN_LOCK:
+        if _TOKEN_CACHE:
+            return _TOKEN_CACHE
+        if not port_open(8765):
+            return ""
+        try:
+            out = subprocess.check_output(
+                [
+                    "ssh",
+                    "-o", "BatchMode=yes",
+                    "-o", "ConnectTimeout=8",
+                    "--",
+                    SSH_HOST,
+                    "cat /etc/grok-agent/token",
+                ],
+                text=True,
+                timeout=12,
+            )
+            _TOKEN_CACHE = out.strip()
+            return _TOKEN_CACHE
+        except Exception:
+            return ""
 
 
 TUNNEL = Tunnel(SSH_HOST)
 
-app = FastAPI(title="Grok Ripeoff Bridge", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    TUNNEL.start()
+    yield
+    TUNNEL.stop()
+
+
+app = FastAPI(title="Grok Ripeoff Bridge", version="0.1.0", lifespan=lifespan)
+
+# Restrict CORS to local application origins instead of wildcard '*'
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=[
+        "http://127.0.0.1:8787",
+        "http://localhost:8787",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
 )
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1)
-    context: str | None = None
-    persona: str | None = Field(default=None, max_length=8000)
-    bot_id: str | None = Field(default=None, max_length=40)
+    message: str = Field(min_length=1, max_length=10000)
+    context: str | None = Field(default=None, max_length=10000)
+    persona: str | None = Field(default=None, max_length=2000)
+    bot_id: str | None = Field(default=None, max_length=40, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
 class BotsPayload(BaseModel):
@@ -68,12 +99,18 @@ class BotsPayload(BaseModel):
     activeId: str = ""
 
 
+class RootDecision(BaseModel):
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    approval_token: str = Field(min_length=10, max_length=128)
+    allow: bool
+
+
 def _agent_headers() -> dict[str, str]:
     token = _load_token()
     if not token:
         raise HTTPException(
             status_code=503,
-            detail="The cloud computer is unreachable.",
+            detail="The cloud computer is unreachable or unauthenticated.",
         )
     return {"Authorization": f"Bearer {token}"}
 
@@ -88,7 +125,7 @@ def status() -> dict[str, Any]:
             r = httpx.get(
                 f"{AGENT_BASE}/agent/status",
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=10.0,
+                timeout=6.0,
             )
             remote = {"reachable": r.is_success, "body": r.json() if r.is_success else r.text}
         except Exception as exc:
@@ -98,19 +135,9 @@ def status() -> dict[str, Any]:
         "agent_base": AGENT_BASE,
         "ssh_host": SSH_HOST,
         "token_configured": bool(token),
-        "tunnel": TUNNEL.snapshot(),
+        "tunnel": tunnel,
         "remote": remote,
     }
-
-
-@app.on_event("startup")
-def start_tunnel() -> None:
-    TUNNEL.start()
-
-
-@app.on_event("shutdown")
-def stop_tunnel() -> None:
-    TUNNEL.stop()
 
 
 @app.get("/api/bots")
@@ -151,7 +178,6 @@ def chat(body: ChatRequest) -> dict[str, Any]:
         raise HTTPException(status_code=r.status_code, detail=r.text)
 
     data = r.json()
-    # Chat gets reply only. Activity is the private log. Drop the model transcript.
     return {
         "status": data.get("status"),
         "reply": data.get("reply") or data.get("question") or "",
@@ -161,12 +187,6 @@ def chat(body: ChatRequest) -> dict[str, Any]:
         "question": data.get("question"),
         "root_approval": data.get("root_approval"),
     }
-
-
-class RootDecision(BaseModel):
-    id: str
-    approval_token: str
-    allow: bool
 
 
 @app.post("/api/desktop/show")
@@ -198,6 +218,7 @@ def root_decide(body: RootDecision) -> dict[str, Any]:
     if not r.is_success:
         raise HTTPException(status_code=r.status_code, detail=r.text)
     return r.json()
+
 
 if APP_DIST.is_dir():
     app.mount("/", StaticFiles(directory=str(APP_DIST), html=True), name="static")

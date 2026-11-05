@@ -3,9 +3,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION_TAG="${1:-v1}"
-TARGET_DIR="$HOME/.local/share/grok-ripeoff/versions/$VERSION_TAG"
-CURRENT_LINK="$HOME/.local/share/grok-ripeoff/current"
-USER_DATA_DIR="$HOME/.local/share/grok-ripeoff/user-data"
+
+# Validate version tag against directory traversal
+if [[ ! "$VERSION_TAG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+  echo "Error: Invalid version tag '$VERSION_TAG'. Must match ^[a-zA-Z0-9._-]+$" >&2
+  exit 1
+fi
+
+BASE_DIR="$HOME/.local/share/grok-ripeoff"
+TARGET_DIR="$BASE_DIR/versions/$VERSION_TAG"
+CURRENT_LINK="$BASE_DIR/current"
+USER_DATA_DIR="$BASE_DIR/user-data"
 
 echo "==> Packaging Grok Ripeoff [$VERSION_TAG]"
 echo "    Source: $ROOT"
@@ -42,10 +50,12 @@ cat > "$TARGET_DIR/version.json" <<EOF
 }
 EOF
 
-# 4. If target is v1 or current does not exist, set current symlink
-if [[ "$VERSION_TAG" == "v1" || ! -L "$CURRENT_LINK" ]]; then
-  echo "==> Pointing $CURRENT_LINK -> $TARGET_DIR"
-  ln -sfn "$TARGET_DIR" "$CURRENT_LINK"
+# 4. If target is v1 or current does not exist, atomically point current symlink to it
+if [[ "$VERSION_TAG" == "v1" || ! -e "$CURRENT_LINK" ]]; then
+  echo "==> Atomically pointing $CURRENT_LINK -> $TARGET_DIR"
+  TMP_LINK="${CURRENT_LINK}.tmp.$$"
+  ln -s "$TARGET_DIR" "$TMP_LINK"
+  mv -Tf "$TMP_LINK" "$CURRENT_LINK"
 fi
 
 echo "==> Packaging complete for $VERSION_TAG!"

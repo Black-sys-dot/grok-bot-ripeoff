@@ -25,6 +25,7 @@ const ICON_PNG = path.join(DIRNAME, "..", "icon.png");
 const ICON_SVG = path.join(DIRNAME, "..", "icon.svg");
 
 let mainWindow = null;
+let retryCount = 0;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -41,29 +42,70 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: false,
+      navigateOnDragDrop: false,
     },
   });
 
   mainWindow.once("ready-to-show", () => {
-    if (mainWindow) mainWindow.show();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+    }
   });
 
+  // Safe external link handling: allow only http/https schemes
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+        shell.openExternal(url);
+      } else {
+        console.warn(`Blocked attempt to open untrusted scheme: ${url}`);
+      }
+    } catch {
+      console.warn(`Blocked malformed URL: ${url}`);
+    }
     return { action: "deny" };
   });
 
-  let retryCount = 0;
-  mainWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
+  // Guard in-window navigation: do not allow navigating away from the local app
+  mainWindow.webContents.on("will-navigate", (event, navigationUrl) => {
+    try {
+      const allowedOrigin = new URL(START_URL).origin;
+      const targetOrigin = new URL(navigationUrl).origin;
+      if (targetOrigin !== allowedOrigin) {
+        event.preventDefault();
+        shell.openExternal(navigationUrl);
+      }
+    } catch {
+      event.preventDefault();
+    }
+  });
+
+  // Handle load failure: only act on main frame errors, ignoring aborted loads and subframes
+  mainWindow.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+    if (!isMainFrame || code === -3) {
+      // Ignore subframe failures (e.g. noVNC or iframes) and user-aborted navigations
+      return;
+    }
     console.error(`Failed to load ${url}: ${description} (${code})`);
+
     if (retryCount < 10) {
       retryCount++;
       setTimeout(() => {
-        if (mainWindow) mainWindow.loadURL(START_URL).catch(() => {});
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.loadURL(START_URL).catch(() => {});
+        }
       }, 1000);
     } else {
-      if (mainWindow) mainWindow.show();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+      }
     }
+  });
+
+  mainWindow.webContents.on("did-finish-load", () => {
+    retryCount = 0;
   });
 
   mainWindow.loadURL(START_URL).catch((err) => {
@@ -76,8 +118,9 @@ function createWindow() {
 }
 
 app.on("second-instance", () => {
-  if (mainWindow) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
   }
 });
@@ -89,5 +132,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
 });
