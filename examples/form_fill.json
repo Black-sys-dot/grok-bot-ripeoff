@@ -1,0 +1,42 @@
+{
+  "actions": [
+    {
+      "type": "goto",
+      "url": "https://httpbin.org/forms/post",
+      "wait_until": "networkidle"
+    },
+    {
+      "type": "type",
+      "selector": "input[name='custname']",
+      "text": "Grok Ripeoff Agent"
+    },
+    {
+      "type": "type",
+      "selector": "input[name='custtel']",
+      "text": "555-0100"
+    },
+    {
+      "type": "type",
+      "selector": "input[name='custemail']",
+      "text": "agent@example.com"
+    },
+    {
+      "type": "click",
+      "selector": "input[name='size'][value='large']"
+    },
+    {
+      "type": "type",
+      "selector": "textarea[name='comments']",
+      "text": "Cloud desktop form fill proof"
+    },
+    {
+      "type": "click",
+      "selector": "form button"
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": "pre",
+      "timeout": 30000
+    }
+  ]
+}

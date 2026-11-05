@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Run a previously stored command as root, only if the approval token matches."""
+
+import hashlib
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+PENDING = Path("/var/lib/grok-root/pending")
+
+
+def load(approval_id: str) -> tuple[Path, dict]:
+    if not re.fullmatch(r"[a-f0-9]{32}", approval_id):
+        raise SystemExit("bad id")
+    path = PENDING / f"{approval_id}.json"
+    if not path.is_file():
+        raise SystemExit("unknown request")
+    return path, json.loads(path.read_text())
+
+
+def main() -> None:
+    action = sys.argv[1]
+    approval_id = sys.argv[2]
+    token = sys.stdin.read().strip()
+    path, data = load(approval_id)
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    if digest != data.get("token_hash") or data.get("status") != "pending":
+        raise SystemExit("not approved")
+
+    if action == "deny":
+        data["status"] = "denied"
+        path.write_text(json.dumps(data))
+        print("denied")
+        return
+
+    if action != "run":
+        raise SystemExit("bad action")
+
+    data["status"] = "running"
+    path.write_text(json.dumps(data))
+    proc = subprocess.run(
+        ["bash", "-lc", data["command"]],
+        text=True,
+        capture_output=True,
+        timeout=180,
+    )
+    output = (proc.stdout + proc.stderr).strip()
+    data["status"] = "done"
+    data["code"] = proc.returncode
+    data["output"] = output[:20000]
+    path.write_text(json.dumps(data))
+    print(output)
+    raise SystemExit(proc.returncode)
+
+
+if __name__ == "__main__":
+    main()

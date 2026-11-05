@@ -1,0 +1,13 @@
+# Legacy alias: enable grok-xvfb + grok-openbox instead.
+[Unit]
+Description=Grok virtual desktop (Xvfb + Openbox)
+After=network.target
+Wants=grok-xvfb.service grok-openbox.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+
+[Install]
+WantedBy=multi-user.target

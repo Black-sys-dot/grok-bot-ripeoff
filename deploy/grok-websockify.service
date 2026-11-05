@@ -1,0 +1,13 @@
+[Unit]
+Description=WebSocket bridge to the Grok agent VNC
+After=grok-x11vnc.service
+Requires=grok-x11vnc.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/websockify --heartbeat 30 127.0.0.1:6080 127.0.0.1:5900
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

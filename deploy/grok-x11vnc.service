@@ -1,0 +1,13 @@
+[Unit]
+Description=VNC server for the Grok agent display
+After=grok-xvfb.service
+Requires=grok-xvfb.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/x11vnc -display :99 -localhost -nopw -forever -shared -rfbport 5900 -noxdamage
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

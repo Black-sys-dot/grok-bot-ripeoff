@@ -1,0 +1,22 @@
+#!/bin/bash
+# Openbox on the virtual display, with a visible background and a shell.
+export DISPLAY=:99
+export HOME=/root
+
+for _ in $(seq 1 50); do
+  xsetroot -solid '#3a4a6b' && break
+  sleep 0.2
+done
+
+if ! pgrep -u grok -x xterm >/dev/null 2>&1; then
+  sudo -u grok env DISPLAY=:99 HOME=/home/grok XAUTHORITY= \
+    xterm \
+      -fa Monospace \
+      -fs 22 \
+      -bg '#16161e' \
+      -fg '#f4f4f5' \
+      -title 'Cloud computer' \
+      -maximized &
+fi
+
+exec /usr/bin/openbox

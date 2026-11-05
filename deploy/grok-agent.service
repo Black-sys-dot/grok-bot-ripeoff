@@ -1,0 +1,28 @@
+[Unit]
+Description=Grok agent browser worker API
+After=network.target grok-xvfb.service grok-openbox.service
+Requires=grok-xvfb.service grok-openbox.service
+
+[Service]
+Type=simple
+User=grok
+Group=grok
+WorkingDirectory=/opt/grok-agent
+Environment=HOME=/home/grok
+Environment=DISPLAY=:99
+Environment=GROK_AGENT_DATA=/home/grok/.grok-agent
+Environment=GROK_AGENT_HOST=127.0.0.1
+Environment=GROK_AGENT_PORT=8765
+Environment=PLAYWRIGHT_BROWSERS_PATH=/home/grok/.cache/ms-playwright
+Environment=XDG_CONFIG_HOME=/home/grok/.config
+Environment=XDG_CACHE_HOME=/home/grok/.cache
+EnvironmentFile=-/etc/grok-agent/env
+ExecStart=/opt/grok-agent/.venv/bin/python -m agent.server
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+ProtectProc=invisible
+
+[Install]
+WantedBy=multi-user.target

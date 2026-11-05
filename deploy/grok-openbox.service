@@ -1,0 +1,14 @@
+[Unit]
+Description=Window manager on virtual display :99
+After=grok-xvfb.service
+Requires=grok-xvfb.service
+
+[Service]
+Type=simple
+Environment=DISPLAY=:99
+ExecStart=/usr/local/bin/grok-desktop-session
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
