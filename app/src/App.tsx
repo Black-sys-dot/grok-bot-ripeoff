@@ -1,9 +1,25 @@
 import { FormEvent, KeyboardEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityEntry, AgentTaskResult, RootApproval, decideRoot, fetchBots, fetchStatus, saveBots, sendChat } from "./api";
+import {
+  ActivityEntry,
+  AgentTaskResult,
+  MCPServerInfo,
+  PluginInfo,
+  RootApproval,
+  addMCPServer,
+  decideRoot,
+  deleteMCPServer,
+  fetchBots,
+  fetchStatus,
+  refreshMCPServers,
+  reloadPlugins,
+  saveBots,
+  sendChat,
+} from "./api";
 import { AmbientScene } from "./AmbientScene";
 import { COLORS, LOOKS, Character, lookIndex } from "./characters";
 import { LiveDesktop } from "./LiveDesktop";
 import { EGG_ID, applyEggOps, dropStressBots, eggDefaults, eggPersona, ensureEgg, isEgg, parseBotOps } from "./egg";
+import { Theme, applyTheme, currentTheme } from "./theme";
 
 type Message = {
   id: string;
@@ -152,6 +168,16 @@ export default function App() {
   const [computerFull, setComputerFull] = useState(false);
   const [desktopSession, setDesktopSession] = useState(0);
   const [menu, setMenu] = useState<BotMenu | null>(null);
+  const [theme, setTheme] = useState<Theme>(() => currentTheme());
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [mcpServers, setMcpServers] = useState<MCPServerInfo[]>([]);
+  const [showToolsModal, setShowToolsModal] = useState(false);
+  const [toolsTab, setToolsTab] = useState<"plugins" | "mcp">("plugins");
+  const [reloadingTools, setReloadingTools] = useState(false);
+  const [newMcpName, setNewMcpName] = useState("");
+  const [newMcpCmd, setNewMcpCmd] = useState("");
+  const [newMcpArgs, setNewMcpArgs] = useState("");
+  const [mcpFormError, setMcpFormError] = useState<string | null>(null);
 
 
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -218,10 +244,84 @@ export default function App() {
             ? `${status.ssh_host} is unreachable. It connects when that machine is back.`
             : "Connecting to the cloud computer…",
       );
+      if (status.plugins?.items) {
+        setPlugins(status.plugins.items);
+      }
+      if (status.mcp?.items) {
+        setMcpServers(status.mcp.items);
+      }
     } catch {
       setOnline(false);
     }
   }, []);
+
+  async function handleReloadPlugins() {
+    setReloadingTools(true);
+    try {
+      const updated = await reloadPlugins();
+      setPlugins(updated);
+    } catch {
+      /* ignore */
+    } finally {
+      setReloadingTools(false);
+    }
+  }
+
+  async function handleRefreshMcp() {
+    setReloadingTools(true);
+    try {
+      const updated = await refreshMCPServers();
+      setMcpServers(updated);
+    } catch {
+      /* ignore */
+    } finally {
+      setReloadingTools(false);
+    }
+  }
+
+  async function handleAddMcp(e: FormEvent) {
+    e.preventDefault();
+    setMcpFormError(null);
+    const name = newMcpName.trim();
+    const command = newMcpCmd.trim();
+    if (!name || !command) {
+      setMcpFormError("Name and command are required.");
+      return;
+    }
+    let args: string[] = [];
+    const rawArgs = newMcpArgs.trim();
+    if (rawArgs) {
+      if (rawArgs.startsWith("[") && rawArgs.endsWith("]")) {
+        try {
+          const parsed = JSON.parse(rawArgs);
+          args = Array.isArray(parsed) ? parsed.map(String) : [rawArgs];
+        } catch {
+          args = rawArgs.split(/\s+/).filter(Boolean);
+        }
+      } else {
+        args = rawArgs.split(/\s+/).filter(Boolean);
+      }
+    }
+
+    try {
+      const updated = await addMCPServer(name, { command, args });
+      setMcpServers(updated);
+      setNewMcpName("");
+      setNewMcpCmd("");
+      setNewMcpArgs("");
+    } catch (err) {
+      setMcpFormError(err instanceof Error ? err.message : "Failed to add MCP server");
+    }
+  }
+
+  async function handleDeleteMcp(name: string) {
+    try {
+      const updated = await deleteMCPServer(name);
+      setMcpServers(updated);
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
     refreshStatus();
@@ -524,6 +624,12 @@ export default function App() {
     );
   }
 
+  function toggleTheme() {
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    applyTheme(next, true);
+  }
+
 
   return (
     <div
@@ -542,14 +648,34 @@ export default function App() {
             <h1>Chats</h1>
             <p>Same computer, different bots</p>
           </div>
-          <button
-            type="button"
-            className="plus-btn"
-            aria-label="New bot"
-            onClick={() => setDraft({ name: "", prompt: "", look: bots.length % LOOKS.length })}
-          >
-            +
-          </button>
+          <div className="head-actions">
+            <button
+              type="button"
+              className="theme-btn"
+              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              title={theme === "dark" ? "Light mode" : "Dark mode"}
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="4.2" />
+                  <path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20.2 15.1A8.6 8.6 0 0 1 8.9 3.8 8.5 8.5 0 1 0 20.2 15.1Z" />
+                </svg>
+              )}
+            </button>
+            <button
+              type="button"
+              className="plus-btn"
+              aria-label="New bot"
+              onClick={() => setDraft({ name: "", prompt: "", look: bots.length % LOOKS.length })}
+            >
+              +
+            </button>
+          </div>
         </div>
         <label className="search-wrap">
           <input
@@ -586,6 +712,14 @@ export default function App() {
             <div className="conn-title">{online ? "Computer connected" : "Not connected"}</div>
             <div className="conn-sub">{sshHost}</div>
           </div>
+          <button
+            type="button"
+            className="tools-badge-btn"
+            title="Manage local Plugins & MCP servers"
+            onClick={() => setShowToolsModal(true)}
+          >
+            ⚙️ {plugins.length} plugins · {mcpServers.length} mcp
+          </button>
         </div>
       </aside>
 
@@ -598,6 +732,14 @@ export default function App() {
                 <h2>{active.name}</h2>
                 <p>{active.prompt}</p>
               </div>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Manage local Plugins & MCP servers"
+                onClick={() => setShowToolsModal(true)}
+              >
+                Tools ({plugins.reduce((acc, p) => acc + p.tools.length, 0) + mcpServers.reduce((acc, m) => acc + m.tools_count, 0)})
+              </button>
               <button
                 type="button"
                 className="icon-btn"
@@ -755,7 +897,7 @@ export default function App() {
                   onClick={shrinkComputer}
                 >
                   <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M3.5 8.5h9" />
+                    <path d="M3.5 8h9" />
                   </svg>
                 </button>
                 <button
@@ -896,6 +1038,179 @@ export default function App() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {/* Tools & MCP Modal */}
+      {showToolsModal && (
+        <div className="modal-backdrop" onClick={() => setShowToolsModal(false)}>
+          <div className="modal tools-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Local Tools & Capabilities</h2>
+              <p>Plugins and MCP servers execute locally on your laptop.</p>
+              <div className="modal-tabs">
+                <button
+                  type="button"
+                  className={`modal-tab ${toolsTab === "plugins" ? "active" : ""}`}
+                  onClick={() => setToolsTab("plugins")}
+                >
+                  🧩 Local Plugins ({plugins.length})
+                </button>
+                <button
+                  type="button"
+                  className={`modal-tab ${toolsTab === "mcp" ? "active" : ""}`}
+                  onClick={() => setToolsTab("mcp")}
+                >
+                  🔌 Local MCP Servers ({mcpServers.length})
+                </button>
+              </div>
+            </div>
+
+            <div className="tools-content">
+              {toolsTab === "plugins" ? (
+                <>
+                  <div className="tools-actions-bar">
+                    <p className="tools-intro">
+                      Plugins live in <code>plugins/</code> or <code>user-data/plugins/</code> and run directly in the local bridge process.
+                    </p>
+                    <button
+                      type="button"
+                      className="action-btn"
+                      disabled={reloadingTools}
+                      onClick={handleReloadPlugins}
+                    >
+                      {reloadingTools ? "Reloading…" : "↻ Reload Plugins"}
+                    </button>
+                  </div>
+
+                  <div className="tools-list">
+                    {plugins.length === 0 ? (
+                      <div className="tools-empty">No plugins detected. Place .py plugins in user-data/plugins/</div>
+                    ) : (
+                      plugins.map((plugin) => (
+                        <div key={plugin.id} className="tool-card">
+                          <div className="tool-card-head">
+                            <div>
+                              <span className="tool-card-title">{plugin.name}</span>
+                              <span className="tool-card-version">v{plugin.version}</span>
+                            </div>
+                            <span className="tool-card-id">{plugin.id}</span>
+                          </div>
+                          <p className="tool-card-desc">{plugin.description}</p>
+                          {plugin.error && <div className="tool-card-error">Error: {plugin.error}</div>}
+                          <div className="tool-functions">
+                            {plugin.tools.map((fn) => (
+                              <span
+                                key={fn.name}
+                                className="tool-fn-pill"
+                                title={fn.description}
+                              >
+                                ⚙️ {fn.name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="tools-actions-bar">
+                    <p className="tools-intro">
+                      Model Context Protocol (MCP) servers run locally over stdio. They are defined in <code>user-data/mcp_servers.json</code>.
+                    </p>
+                    <button
+                      type="button"
+                      className="action-btn"
+                      disabled={reloadingTools}
+                      onClick={handleRefreshMcp}
+                    >
+                      {reloadingTools ? "Refreshing…" : "↻ Refresh MCP"}
+                    </button>
+                  </div>
+
+                  <div className="tools-list">
+                    {mcpServers.length === 0 ? (
+                      <div className="tools-empty">No MCP servers configured yet. Add one below!</div>
+                    ) : (
+                      mcpServers.map((srv) => (
+                        <div key={srv.name} className="tool-card">
+                          <div className="tool-card-head">
+                            <div>
+                              <span className="tool-card-title">{srv.name}</span>
+                              <span className={`status-dot ${srv.running ? "online" : "offline"}`} style={{ display: "inline-block", verticalAlign: "middle", marginLeft: "0.4rem" }} />
+                            </div>
+                            <button
+                              type="button"
+                              className="danger-btn-sm"
+                              onClick={() => handleDeleteMcp(srv.name)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                          <div className="tool-command-preview">
+                            <code>{srv.command} {srv.args.join(" ")}</code>
+                          </div>
+                          {srv.error && <div className="tool-card-error">Error: {srv.error}</div>}
+                          <div className="tool-functions">
+                            {srv.tools.length === 0 ? (
+                              <span className="tool-fn-empty">{srv.running ? "No tools exported" : "Offline"}</span>
+                            ) : (
+                              srv.tools.map((fn) => (
+                                <span
+                                  key={fn.name}
+                                  className="tool-fn-pill"
+                                  title={fn.description}
+                                >
+                                  🔌 {fn.name}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="mcp-add-section">
+                    <h3>Add MCP Server</h3>
+                    <form className="mcp-add-form" onSubmit={handleAddMcp}>
+                      {mcpFormError && <div className="tool-card-error">{mcpFormError}</div>}
+                      <input
+                        placeholder="Server Name (e.g. filesystem)"
+                        value={newMcpName}
+                        onChange={(e) => setNewMcpName(e.target.value)}
+                      />
+                      <input
+                        placeholder="Command (e.g. npx, python3, uvx)"
+                        value={newMcpCmd}
+                        onChange={(e) => setNewMcpCmd(e.target.value)}
+                      />
+                      <input
+                        placeholder="Arguments (e.g. -y @modelcontextprotocol/server-filesystem /tmp)"
+                        value={newMcpArgs}
+                        onChange={(e) => setNewMcpArgs(e.target.value)}
+                      />
+                      <button type="submit" className="action-btn">
+                        + Add MCP Server
+                      </button>
+                    </form>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: "1rem" }}>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setShowToolsModal(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

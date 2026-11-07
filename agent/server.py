@@ -118,6 +118,47 @@ def agent_task(body: AgentTaskRequest, _: None = Depends(verify_token)) -> dict[
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+class ToolExecutionRequest(BaseModel):
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/agent/tool")
+def agent_tool(body: ToolExecutionRequest, _: None = Depends(verify_token)) -> dict[str, Any]:
+    session = get_session()
+    name = body.name
+    args = body.arguments
+
+    if name == "show_on_screen":
+        from agent.runner import show_on_screen
+        return show_on_screen(str(args.get("target", "")))
+
+    if name == "run_root":
+        from agent.root_gate import request_root
+        return request_root(args.get("command", ""), args.get("reason", ""))
+
+    from agent.computer import execute_computer_tool
+    comp_res = execute_computer_tool(name, args)
+    if not (comp_res.get("detail", "").startswith("unknown computer tool")):
+        return comp_res
+
+    from agent.browser_tools import execute_browser_tool
+    from agent.page_observe import observe_page
+    from agent.config import SCREENSHOTS_DIR
+
+    page = session.get_page()
+    result = execute_browser_tool(page, name, args)
+    if result.get("ok"):
+        try:
+            obs = observe_page(page, SCREENSHOTS_DIR)
+            result["observation"] = obs.get("text_summary", "")
+            result["url"] = page.url
+            result["screenshot_base64"] = obs.get("screenshot_base64")
+        except Exception:
+            pass
+    return result
+
+
 @app.post("/agent/desktop/show")
 def desktop_show(_: None = Depends(verify_token)) -> dict[str, Any]:
     try:

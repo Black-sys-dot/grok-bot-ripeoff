@@ -1,3 +1,33 @@
+export type PluginTool = {
+  name: string;
+  description: string;
+};
+
+export type PluginInfo = {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  file: string;
+  error?: string;
+  tools: PluginTool[];
+};
+
+export type MCPTool = {
+  name: string;
+  description: string;
+};
+
+export type MCPServerInfo = {
+  name: string;
+  command: string;
+  args: string[];
+  running: boolean;
+  tools_count: number;
+  tools: MCPTool[];
+  error?: string;
+};
+
 export type AgentStatus = {
   bridge: string;
   agent_base: string;
@@ -5,6 +35,8 @@ export type AgentStatus = {
   token_configured: boolean;
   tunnel?: { agent: boolean; desktop: boolean; error: string };
   remote: { reachable: boolean; body?: unknown; error?: string };
+  plugins?: { total: number; items: PluginInfo[] };
+  mcp?: { total: number; items: MCPServerInfo[] };
 };
 
 export type ActivityEntry = {
@@ -83,6 +115,49 @@ export async function decideRoot(
       allow,
     }),
   });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function fetchPlugins(): Promise<PluginInfo[]> {
+  const r = await fetch("/api/plugins");
+  if (!r.ok) return [];
+  return r.json();
+}
+
+export async function reloadPlugins(): Promise<PluginInfo[]> {
+  const r = await fetch("/api/plugins/reload", { method: "POST" });
+  if (!r.ok) return [];
+  return r.json();
+}
+
+export async function fetchMCPServers(): Promise<MCPServerInfo[]> {
+  const r = await fetch("/api/mcp");
+  if (!r.ok) return [];
+  return r.json();
+}
+
+export async function refreshMCPServers(): Promise<MCPServerInfo[]> {
+  const r = await fetch("/api/mcp/refresh", { method: "POST" });
+  if (!r.ok) return [];
+  return r.json();
+}
+
+export async function addMCPServer(
+  name: string,
+  config: Record<string, unknown>,
+): Promise<MCPServerInfo[]> {
+  const r = await fetch("/api/mcp/server", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, config }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function deleteMCPServer(name: string): Promise<MCPServerInfo[]> {
+  const r = await fetch(`/api/mcp/server/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

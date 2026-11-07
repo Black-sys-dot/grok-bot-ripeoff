@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, nativeTheme, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -35,7 +35,7 @@ function createWindow() {
     minHeight: 640,
     title: "Grok Ripeoff",
     icon: ICON_PNG || ICON_SVG,
-    backgroundColor: "#d9eeff",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#0b1220" : "#d9eeff",
     autoHideMenuBar: true,
     show: false,
     webPreferences: {

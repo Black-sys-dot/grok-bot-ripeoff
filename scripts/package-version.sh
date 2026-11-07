@@ -38,6 +38,13 @@ rsync -a --delete \
   --exclude 'output' \
   "$ROOT/" "$TARGET_DIR/"
 
+# 3. Ensure bridge Python virtualenv and dependencies
+echo "==> Ensuring bridge Python virtualenv in $TARGET_DIR..."
+if [[ ! -x "$TARGET_DIR/bridge/.venv/bin/python" ]]; then
+  python3 -m venv "$TARGET_DIR/bridge/.venv"
+fi
+"$TARGET_DIR/bridge/.venv/bin/pip" install -q -r "$TARGET_DIR/bridge/requirements.txt"
+
 # 3. Write version info
 COMMIT_HASH="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "v1-initial")"
 TIMESTAMP="$(date -Iseconds)"
