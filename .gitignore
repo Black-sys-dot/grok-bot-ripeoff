@@ -39,6 +39,10 @@ app/tsconfig.tsbuildinfo
 Thumbs.db
 
 # User data & testing
+.env*
+*.pem
+*.key
+*.token
 output/*.png
 !output/.gitkeep
 user-data/
