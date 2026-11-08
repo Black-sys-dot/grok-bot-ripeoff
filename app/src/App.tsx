@@ -285,12 +285,14 @@ export default function App() {
     const name = newMcpName.trim();
     const command = newMcpCmd.trim();
     if (!name || !command) {
-      setMcpFormError("Name and command are required.");
+      setMcpFormError("Name and command (or URL) are required.");
       return;
     }
+
+    const isUrl = command.startsWith("http://") || command.startsWith("https://");
     let args: string[] = [];
     const rawArgs = newMcpArgs.trim();
-    if (rawArgs) {
+    if (!isUrl && rawArgs) {
       if (rawArgs.startsWith("[") && rawArgs.endsWith("]")) {
         try {
           const parsed = JSON.parse(rawArgs);
@@ -304,7 +306,8 @@ export default function App() {
     }
 
     try {
-      const updated = await addMCPServer(name, { command, args });
+      const config = isUrl ? { url: command } : { command, args };
+      const updated = await addMCPServer(name, config);
       setMcpServers(updated);
       setNewMcpName("");
       setNewMcpCmd("");
@@ -1149,7 +1152,7 @@ export default function App() {
                             </button>
                           </div>
                           <div className="tool-command-preview">
-                            <code>{srv.command} {srv.args.join(" ")}</code>
+                            <code>{srv.url || `${srv.command || ""} ${(srv.args || []).join(" ")}`}</code>
                           </div>
                           {srv.error && <div className="tool-card-error">Error: {srv.error}</div>}
                           <div className="tool-functions">
@@ -1182,7 +1185,7 @@ export default function App() {
                         onChange={(e) => setNewMcpName(e.target.value)}
                       />
                       <input
-                        placeholder="Command (e.g. npx, python3, uvx)"
+                        placeholder="Command (e.g. npx, python3) or URL (e.g. https://...)"
                         value={newMcpCmd}
                         onChange={(e) => setNewMcpCmd(e.target.value)}
                       />

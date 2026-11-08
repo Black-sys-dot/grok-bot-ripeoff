@@ -20,8 +20,10 @@ export type MCPTool = {
 
 export type MCPServerInfo = {
   name: string;
-  command: string;
-  args: string[];
+  type?: "stdio" | "http";
+  url?: string;
+  command?: string;
+  args?: string[];
   running: boolean;
   tools_count: number;
   tools: MCPTool[];

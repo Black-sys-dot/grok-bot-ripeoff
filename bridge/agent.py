@@ -18,6 +18,7 @@ from openai import OpenAI
 
 from bridge.mcp import REGISTRY as mcp_registry
 from bridge.plugins import REGISTRY as plugin_registry
+from bridge.sanitize import sanitize_sensitive_data
 
 logger = logging.getLogger("grok.agent")
 
@@ -247,7 +248,7 @@ def _log_activity(activity: list[dict[str, Any]], step: int, kind: str, title: s
         "step": step,
         "kind": kind,
         "title": title,
-        "detail": detail[:2000] if detail else "",
+        "detail": sanitize_sensitive_data(detail[:2000] if detail else ""),
     })
 
 
@@ -392,11 +393,12 @@ def run_orchestrated_task(
                 mcp_res = mcp_registry.call_tool(t_name, args)
                 ok = mcp_res.get("ok", True)
                 server_tag = t_name.split("__")[1] if len(t_name.split("__")) > 1 else "mcp"
-                _log_activity(activity, step, "tool" if ok else "error", f"mcp:{server_tag}", str(mcp_res.get("content", mcp_res))[:1000])
+                clean_content = sanitize_sensitive_data(str(mcp_res.get("content", mcp_res)))
+                _log_activity(activity, step, "tool" if ok else "error", f"mcp:{server_tag}", clean_content[:1000])
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": json.dumps(mcp_res),
+                    "content": json.dumps({"ok": ok, "content": clean_content}),
                 })
                 continue
 
@@ -406,11 +408,12 @@ def run_orchestrated_task(
                 ok = plug_res.get("ok", True)
                 p_id = t_name.split("__")[1] if len(t_name.split("__")) > 1 else "plugin"
                 detail = plug_res.get("detail") or plug_res.get("result") or plug_res.get("error") or plug_res
-                _log_activity(activity, step, "tool" if ok else "error", f"plugin:{p_id}", str(detail)[:1000])
+                clean_detail = sanitize_sensitive_data(str(detail))
+                _log_activity(activity, step, "tool" if ok else "error", f"plugin:{p_id}", clean_detail[:1000])
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": json.dumps(plug_res),
+                    "content": json.dumps({"ok": ok, "result": clean_detail}),
                 })
                 continue
 
@@ -442,7 +445,7 @@ def run_orchestrated_task(
 
                     obs = cloud_res.get("observation", "")
                     detail = cloud_res.get("detail", "")
-                    content_str = obs or detail or json.dumps(cloud_res)
+                    content_str = sanitize_sensitive_data(obs or detail or json.dumps(cloud_res))
                     _log_activity(activity, step, "tool", t_name.removeprefix("browser_"), detail or obs or "executed")
                     messages.append({
                         "role": "tool",
@@ -450,7 +453,7 @@ def run_orchestrated_task(
                         "content": content_str,
                     })
                 else:
-                    err_msg = f"VPS HTTP {r.status_code}: {r.text}"
+                    err_msg = sanitize_sensitive_data(f"VPS HTTP {r.status_code}: {r.text}")
                     _log_activity(activity, step, "error", t_name, err_msg)
                     messages.append({
                         "role": "tool",
@@ -458,7 +461,7 @@ def run_orchestrated_task(
                         "content": json.dumps({"ok": False, "error": err_msg}),
                     })
             except Exception as exc:
-                err_msg = f"Failed to reach VPS tool endpoint: {exc}"
+                err_msg = sanitize_sensitive_data(f"Failed to reach VPS tool endpoint: {exc}")
                 _log_activity(activity, step, "error", t_name, err_msg)
                 messages.append({
                     "role": "tool",

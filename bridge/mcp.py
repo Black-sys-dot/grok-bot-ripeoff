@@ -15,6 +15,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import httpx
+
+from bridge.sanitize import sanitize_sensitive_data
+
 logger = logging.getLogger("grok.mcp")
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -248,10 +252,13 @@ class MCPServerSession:
             logger.warning("tools/list failed on MCP server %s: %s", self.name, exc)
             self.tools = []
 
+    def is_running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if not self.proc or self.proc.poll() is not None:
             if not self.start():
-                return {"ok": False, "error": f"Server '{self.name}' is not running: {self.error}"}
+                return {"ok": False, "error": sanitize_sensitive_data(f"Server '{self.name}' is not running: {self.error}")}
 
         try:
             resp = self._send_request(
@@ -260,7 +267,7 @@ class MCPServerSession:
                 timeout=60.0,
             )
             if "error" in resp:
-                return {"ok": False, "error": resp["error"]}
+                return {"ok": False, "error": sanitize_sensitive_data(str(resp["error"]))}
             result = resp.get("result", {})
             content = result.get("content", [])
             is_error = result.get("isError", False)
@@ -278,28 +285,195 @@ class MCPServerSession:
                 else:
                     texts.append(str(item))
 
-            joined = "\n".join(texts)
+            joined = sanitize_sensitive_data("\n".join(texts))
             return {
                 "ok": not is_error,
                 "content": joined or result,
                 "is_error": is_error,
             }
         except Exception as exc:
-            return {"ok": False, "error": f"MCP tool execution failed: {exc}"}
+            return {"ok": False, "error": sanitize_sensitive_data(f"MCP tool execution failed: {exc}")}
+
+
+class MCPHttpSession:
+    def __init__(self, name: str, config: dict[str, Any]) -> None:
+        self.name = name
+        self.config = config
+        self.url = str(config.get("url", "")).rstrip("/")
+        self.tools: list[dict[str, Any]] = []
+        self.error: str = ""
+        self.running: bool = False
+        self._session_id: str | None = None
+        self._client: httpx.Client | None = None
+        self._req_id = 0
+        self._lock = threading.Lock()
+
+    def _next_id(self) -> int:
+        with self._lock:
+            self._req_id += 1
+            return self._req_id
+
+    def is_running(self) -> bool:
+        return self.running
+
+    def start(self) -> bool:
+        self.stop()
+        self.error = ""
+        if not self.url or not self.url.startswith(("http://", "https://")):
+            self.error = f"Invalid HTTP URL: {self.url}"
+            return False
+
+        try:
+            self._client = httpx.Client(timeout=25.0)
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            }
+            if isinstance(self.config.get("headers"), dict):
+                for k, v in self.config["headers"].items():
+                    headers[str(k)] = str(v)
+
+            # 1. Initialize
+            init_payload = {
+                "jsonrpc": "2.0",
+                "id": self._next_id(),
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "grok-ripeoff", "version": "1.0.0"},
+                },
+            }
+            r = self._client.post(self.url, json=init_payload, headers=headers)
+            if not r.is_success:
+                self.error = f"Initialize failed: HTTP {r.status_code}"
+                return False
+
+            self._session_id = r.headers.get("mcp-session-id")
+            if self._session_id:
+                headers["mcp-session-id"] = self._session_id
+
+            # 2. Notification initialized
+            self._client.post(
+                self.url,
+                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                headers=headers,
+            )
+
+            # 3. Fetch tools/list
+            r_tools = self._client.post(
+                self.url,
+                json={"jsonrpc": "2.0", "id": self._next_id(), "method": "tools/list", "params": {}},
+                headers=headers,
+            )
+            if not r_tools.is_success:
+                self.error = f"tools/list failed: HTTP {r_tools.status_code}"
+                return False
+
+            data = r_tools.json()
+            if "error" in data:
+                self.error = str(data["error"])
+                return False
+
+            self.tools = data.get("result", {}).get("tools", [])
+            self.running = True
+            logger.info("MCP HTTP server %s started with %d tools", self.name, len(self.tools))
+            return True
+        except Exception as exc:
+            self.error = sanitize_sensitive_data(f"Failed to connect to MCP HTTP server: {exc}")
+            self.running = False
+            return False
+
+    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if not self.running or self._client is None:
+            if not self.start():
+                return {"ok": False, "error": self.error or "HTTP MCP server offline"}
+
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            }
+            if self._session_id:
+                headers["mcp-session-id"] = self._session_id
+            if isinstance(self.config.get("headers"), dict):
+                for k, v in self.config["headers"].items():
+                    headers[str(k)] = str(v)
+
+            call_payload = {
+                "jsonrpc": "2.0",
+                "id": self._next_id(),
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments,
+                },
+            }
+            r = self._client.post(self.url, json=call_payload, headers=headers, timeout=60.0)
+            if not r.is_success:
+                return {"ok": False, "error": f"MCP HTTP error {r.status_code}"}
+
+            data = r.json()
+            if "error" in data:
+                return {"ok": False, "error": sanitize_sensitive_data(str(data["error"]))}
+
+            result = data.get("result", {})
+            content = result.get("content", [])
+            is_error = result.get("isError", False)
+
+            texts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        texts.append(item.get("text", ""))
+                    elif item.get("type") == "image":
+                        texts.append("[image content]")
+                    else:
+                        texts.append(json.dumps(item))
+                else:
+                    texts.append(str(item))
+
+            joined = sanitize_sensitive_data("\n".join(texts))
+            return {
+                "ok": not is_error,
+                "content": joined or result,
+                "is_error": is_error,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": sanitize_sensitive_data(f"MCP tool call failed: {exc}")}
+
+    def stop(self) -> None:
+        self.running = False
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+
+
+def _create_mcp_session(name: str, config: dict[str, Any]) -> MCPServerSession | MCPHttpSession | None:
+    if not isinstance(config, dict):
+        return None
+    if config.get("url"):
+        return MCPHttpSession(name, config)
+    if config.get("command"):
+        return MCPServerSession(name, config)
+    return None
 
 
 class MCPRegistry:
     def __init__(self) -> None:
-        self.sessions: dict[str, MCPServerSession] = {}
+        self.sessions: dict[str, MCPServerSession | MCPHttpSession] = {}
         self._load()
 
     def _load(self) -> None:
         config = load_mcp_config()
         servers = config.get("mcpServers", {})
         for name, s_cfg in servers.items():
-            if isinstance(s_cfg, dict) and s_cfg.get("command"):
-                session = MCPServerSession(name, s_cfg)
-                self.sessions[name] = session
+            sess = _create_mcp_session(name, s_cfg)
+            if sess:
+                self.sessions[name] = sess
 
     def refresh(self) -> None:
         """Reload configuration and start/restart sessions."""
@@ -315,7 +489,7 @@ class MCPRegistry:
         for name, session in self.sessions.items():
             if enabled_servers is not None and name not in enabled_servers:
                 continue
-            if not session.tools and session.proc is None and not session.error:
+            if not session.tools and not session.is_running() and not session.error:
                 # Lazy start if not started
                 session.start()
 
@@ -353,18 +527,21 @@ class MCPRegistry:
     def get_status(self) -> list[dict[str, Any]]:
         out = []
         for name, session in self.sessions.items():
-            running = session.proc is not None and session.proc.poll() is None
+            url = session.config.get("url")
+            cmd = session.config.get("command")
             out.append({
                 "name": name,
-                "command": session.config.get("command"),
+                "type": "http" if url else "stdio",
+                "url": url,
+                "command": cmd,
                 "args": session.config.get("args", []),
-                "running": running,
+                "running": session.is_running(),
                 "tools_count": len(session.tools),
                 "tools": [
                     {"name": t.get("name"), "description": t.get("description", "")}
                     for t in session.tools
                 ],
-                "error": session.error,
+                "error": sanitize_sensitive_data(session.error),
             })
         return out
 
@@ -377,9 +554,11 @@ class MCPRegistry:
 
         if name in self.sessions:
             self.sessions[name].stop()
-        session = MCPServerSession(name, config)
-        session.start()
-        self.sessions[name] = session
+        sess = _create_mcp_session(name, config)
+        if not sess:
+            raise ValueError("Server config must have either 'command' or 'url'")
+        sess.start()
+        self.sessions[name] = sess
 
     def remove_server(self, name: str) -> None:
         full_cfg = load_mcp_config()
