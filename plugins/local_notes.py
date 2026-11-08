@@ -31,8 +31,9 @@ def _ensure_dir() -> Path:
 
 
 def _sanitize_title(title: str) -> str:
-    cleaned = re.sub(r"[^\w\s.-]", "", title).strip()
-    return cleaned.replace(" ", "_") or "untitled"
+    cleaned = re.sub(r"[^\w\s-]", "", title).strip()
+    slug = cleaned.replace(" ", "_") or "untitled"
+    return Path(slug).name
 
 
 def local_save_note(title: str, content: str) -> dict[str, Any]:

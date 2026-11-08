@@ -18,6 +18,24 @@ PLUGIN_META = {
 
 MAX_FILE_BYTES = 500_000  # 500 KB limit for reading text files into context
 
+BLOCKED_SENSITIVE_PARTS = {
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+    "shadow",
+    "gshadow",
+    "sudoers",
+    ".bash_history",
+    ".zsh_history",
+}
+
 
 def _resolve_path(raw: str) -> Path:
     p = Path(raw).expanduser()
@@ -69,6 +87,9 @@ def local_read_file(path: str) -> dict[str, Any]:
         path: Path to the file.
     """
     target = _resolve_path(path)
+    if any(part in BLOCKED_SENSITIVE_PARTS for part in target.parts):
+        return {"ok": False, "error": "Access to sensitive credentials/keys is blocked for security."}
+
     if not target.is_file():
         return {"ok": False, "error": f"File not found: {target}"}
 

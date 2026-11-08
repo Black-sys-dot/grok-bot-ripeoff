@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -88,13 +89,18 @@ class MCPServerSession:
             self.error = "No 'command' specified in server config"
             return False
 
+        resolved_bin = shutil.which(command)
+        if not resolved_bin:
+            self.error = f"Command '{command}' not found on system PATH"
+            return False
+
         args = self.config.get("args", [])
         env = os.environ.copy()
         if isinstance(self.config.get("env"), dict):
             for k, v in self.config["env"].items():
                 env[str(k)] = str(v)
 
-        cmd = [command] + [str(a) for a in args]
+        cmd = [resolved_bin] + [str(a) for a in args]
         try:
             self.proc = subprocess.Popen(
                 cmd,
