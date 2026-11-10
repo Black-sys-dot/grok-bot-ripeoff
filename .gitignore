@@ -43,6 +43,8 @@ Thumbs.db
 *.pem
 *.key
 *.token
+mcp_servers.json
+notes/
 output/*.png
 !output/.gitkeep
 user-data/
